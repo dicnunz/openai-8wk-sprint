@@ -1,8 +1,12 @@
 from fastapi import FastAPI, HTTPException
+from fastapi.staticfiles import StaticFiles
+from pathlib import Path
 from pydantic import BaseModel
 import os
 
 app = FastAPI()
+static_dir = Path(__file__).parent / "static"
+app.mount("/ui", StaticFiles(directory=static_dir, html=True), name="ui")
 MOCK = os.getenv("MOCK_MODE", "0") == "1"
 
 class GenIn(BaseModel):
