@@ -8,3 +8,11 @@ services:
   envVars:
   - key: MOCK_MODE
     value: "1"
+- type: static
+  name: openai-8wk-sprint-web
+  env: static
+  buildCommand: cd app-web && npm ci && npm run build
+  staticPublishPath: app-web/dist
+  envVars:
+  - key: VITE_API_BASE
+    value: https://openai-8wk-sprint-api.onrender.com
