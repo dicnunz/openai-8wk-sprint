@@ -9,9 +9,8 @@ services:
   - key: MOCK_MODE
     value: "1"
 
-- type: static
-  name: openai-8wk-sprint-web
-  env: static
+staticSites:
+- name: openai-8wk-sprint-web
   buildCommand: cd app-web && npm ci && npm run build
   staticPublishPath: app-web/dist
   envVars:
