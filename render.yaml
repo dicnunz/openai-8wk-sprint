@@ -8,6 +8,9 @@ services:
   envVars:
   - key: MOCK_MODE
     value: "1"
+ codex/add-render.yaml-for-web-frontend-pmawb8
+staticSites:
+- name: openai-8wk-sprint-web
 
 - type: static_site
   name: openai-8wk-sprint-web
