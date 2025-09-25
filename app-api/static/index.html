@@ -5,26 +5,36 @@
   <meta name="viewport" content="width=device-width, initial-scale=1"/>
   <title>OpenAI 8-Week Sprint UI</title>
   <style>
-    body{font-family:system-ui,-apple-system,Segoe UI,Roboto,sans-serif;margin:40px;max-width:720px}
-    textarea{width:100%;height:120px}
+    body{font-family:system-ui,-apple-system,Segoe UI,Roboto,sans-serif;margin:40px;max-width:900px}
+    textarea,select{width:100%}
+    textarea{height:140px}
     button{padding:8px 12px;margin-top:8px}
     pre{background:#111;color:#eee;padding:12px;overflow:auto}
+    .grid{display:grid;grid-template-columns:1fr 1fr;gap:24px;align-items:start}
   </style>
 </head>
 <body>
   <h1>Generate</h1>
-  <label>
-    Mode
-    <select id="mode">
-      <option value="generate">/generate</option>
-      <option value="title">/title</option>
-      <option value="summarize">/summarize</option>
-      <option value="keywords">/keywords</option>
-    </select>
-  </label>
-  <textarea id="prompt" placeholder="Type text or prompt"></textarea>
-  <br/><button id="go">Send</button>
-  <pre id="out"></pre>
+  <div class="grid">
+    <div>
+      <label>Mode</label>
+      <select id="mode">
+        <option value="generate">/generate</option>
+        <option value="title">/title</option>
+        <option value="summarize">/summarize</option>
+        <option value="keywords">/keywords</option>
+      </select>
+      <textarea id="prompt" placeholder="Type text or prompt"></textarea>
+      <br/><button id="go">Send</button>
+      <h3>Response</h3>
+      <pre id="out"></pre>
+    </div>
+    <div>
+      <h3>History (latest 10)</h3>
+      <pre id="history"></pre>
+      <button id="refresh">Refresh</button>
+    </div>
+  </div>
   <script src="./main.js"></script>
 </body>
 </html>

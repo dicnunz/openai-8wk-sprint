@@ -1,8 +1,11 @@
 from __future__ import annotations
 
+import datetime
 import json
 import os
+import sqlite3
 from pathlib import Path
+from typing import Any
 
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
@@ -19,6 +22,36 @@ app.add_middleware(
 )
 
 MOCK = os.getenv("MOCK_MODE", "0") == "1"
+DB_PATH = os.getenv("DB_PATH", str((Path(__file__).parent / "data.db").resolve()))
+
+
+def _db() -> sqlite3.Connection:
+    return sqlite3.connect(DB_PATH)
+
+
+def _init_db() -> None:
+    with _db() as con:
+        con.execute(
+            """
+            CREATE TABLE IF NOT EXISTS logs (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                mode TEXT NOT NULL,
+                input TEXT NOT NULL,
+                output TEXT NOT NULL,
+                ts TEXT NOT NULL
+            )
+            """
+        )
+
+
+def _log(mode: str, input_text: str, output_obj: dict[str, Any]) -> None:
+    payload = json.dumps(output_obj)
+    timestamp = datetime.datetime.utcnow().isoformat() + "Z"
+    with _db() as con:
+        con.execute(
+            "INSERT INTO logs(mode, input, output, ts) VALUES(?, ?, ?, ?)",
+            (mode, input_text, payload, timestamp),
+        )
 
 
 class GenIn(BaseModel):
@@ -27,11 +60,6 @@ class GenIn(BaseModel):
 
 class TextIn(BaseModel):
     text: str
-
-
-class RewriteIn(BaseModel):
-    text: str
-    tone: str = "concise"
 
 
 def _openai():
@@ -43,6 +71,11 @@ def _openai():
     return client
 
 
+@app.on_event("startup")
+def startup() -> None:
+    _init_db()
+
+
 @app.get("/health")
 def health():
     return {"ok": True}
@@ -51,7 +84,9 @@ def health():
 @app.post("/generate")
 def generate(inp: GenIn):
     if MOCK:
-        return {"text": f"(mock) you said: {inp.prompt}"}
+        result = {"text": f"(mock) you said: {inp.prompt}"}
+        _log("generate", inp.prompt, result)
+        return result
     try:
         client = _openai()
         resp = client.chat.completions.create(
@@ -59,7 +94,9 @@ def generate(inp: GenIn):
             messages=[{"role": "user", "content": inp.prompt}],
             temperature=0.2,
         )
-        return {"text": resp.choices[0].message.content}
+        result = {"text": resp.choices[0].message.content}
+        _log("generate", inp.prompt, result)
+        return result
     except HTTPException:
         raise
     except Exception as exc:  # pragma: no cover - network failures
@@ -70,7 +107,9 @@ def generate(inp: GenIn):
 def title(inp: TextIn):
     text = inp.text.strip()
     if MOCK:
-        return {"text": text[:60] or "Untitled"}
+        result = {"text": text[:60] or "Untitled"}
+        _log("title", inp.text, result)
+        return result
     try:
         client = _openai()
         resp = client.chat.completions.create(
@@ -81,7 +120,9 @@ def title(inp: TextIn):
             ],
             temperature=0.1,
         )
-        return {"text": resp.choices[0].message.content.strip()[:60]}
+        result = {"text": resp.choices[0].message.content.strip()[:60]}
+        _log("title", inp.text, result)
+        return result
     except HTTPException:
         raise
     except Exception as exc:  # pragma: no cover - network failures
@@ -93,11 +134,15 @@ def summarize(inp: TextIn):
     text = inp.text.strip()
     if MOCK:
         if not text:
-            return {"text": "No content."}
+            result = {"text": "No content."}
+            _log("summarize", inp.text, result)
+            return result
         snippet = text[:150]
         if len(text) > 150:
             snippet += "..."
-        return {"text": snippet}
+        result = {"text": snippet}
+        _log("summarize", inp.text, result)
+        return result
     try:
         client = _openai()
         resp = client.chat.completions.create(
@@ -108,7 +153,9 @@ def summarize(inp: TextIn):
             ],
             temperature=0.2,
         )
-        return {"text": resp.choices[0].message.content.strip()}
+        result = {"text": resp.choices[0].message.content.strip()}
+        _log("summarize", inp.text, result)
+        return result
     except HTTPException:
         raise
     except Exception as exc:  # pragma: no cover - network failures
@@ -120,7 +167,9 @@ def keywords(inp: TextIn):
     if MOCK:
         words = [w.strip(".,!?;:").lower() for w in inp.text.split()]
         uniq = sorted({w for w in words if len(w) > 3})[:8]
-        return {"keywords": uniq}
+        result = {"keywords": uniq}
+        _log("keywords", inp.text, result)
+        return result
     try:
         client = _openai()
         resp = client.chat.completions.create(
@@ -139,7 +188,9 @@ def keywords(inp: TextIn):
             keywords_list = [str(item) for item in data]
         except (json.JSONDecodeError, ValueError):
             keywords_list = [kw.strip() for kw in content.split(",") if kw.strip()]
-        return {"keywords": keywords_list}
+        result = {"keywords": keywords_list}
+        _log("keywords", inp.text, result)
+        return result
     except HTTPException:
         raise
     except Exception as exc:  # pragma: no cover - network failures
@@ -149,3 +200,31 @@ def keywords(inp: TextIn):
 static_dir = Path(__file__).parent / "static"
 if static_dir.exists():
     app.mount("/ui", StaticFiles(directory=static_dir, html=True), name="ui")
+
+
+@app.get("/history")
+def history(limit: int = 10):
+    limited = max(1, min(limit, 100))
+    with _db() as con:
+        rows = con.execute(
+            "SELECT id, mode, input, output, ts FROM logs ORDER BY id DESC LIMIT ?",
+            (limited,),
+        ).fetchall()
+
+    history_items = []
+    for row in rows:
+        output_raw = row[3]
+        try:
+            output_obj: Any = json.loads(output_raw)
+        except json.JSONDecodeError:
+            output_obj = output_raw
+        history_items.append(
+            {
+                "id": row[0],
+                "mode": row[1],
+                "input": row[2],
+                "output": output_obj,
+                "ts": row[4],
+            }
+        )
+    return history_items
