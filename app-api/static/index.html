@@ -13,7 +13,16 @@
 </head>
 <body>
   <h1>Generate</h1>
-  <textarea id="prompt" placeholder="Type a prompt"></textarea>
+  <label>
+    Mode
+    <select id="mode">
+      <option value="generate">/generate</option>
+      <option value="title">/title</option>
+      <option value="summarize">/summarize</option>
+      <option value="keywords">/keywords</option>
+    </select>
+  </label>
+  <textarea id="prompt" placeholder="Type text or prompt"></textarea>
   <br/><button id="go">Send</button>
   <pre id="out"></pre>
   <script src="./main.js"></script>
