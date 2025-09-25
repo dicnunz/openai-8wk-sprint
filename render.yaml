@@ -1,0 +1,10 @@
+services:
+- type: web
+  name: openai-8wk-sprint-api
+  env: python
+  plan: free
+  buildCommand: pip install -r requirements.txt
+  startCommand: uvicorn app-api.main:app --host 0.0.0.0 --port $PORT
+  envVars:
+  - key: MOCK_MODE
+    value: "1"
