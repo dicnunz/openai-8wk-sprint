@@ -1,11 +1,19 @@
 # OpenAI 8-Week Sprint
-Goal: Earn an offer for OpenAI Applied Emerging Talent by shipping two production-grade apps and passing coding interviews.
 
-Timeline: 8 weeks (start today)
-Deliverables:
-- App 1: React + FastAPI + Postgres + OpenAI API
-- App 2: iOS (SwiftUI) or React Native client for App 1
-- 40 LeetCode E/M + 2 mock pair-programming sessions
-- Clean code, tests, CI, live demos
+**Live demo:** https://openai-8wk-sprint-api.onrender.com/ui  
+**Health:** https://openai-8wk-sprint-api.onrender.com/health
 
-Status: Day 0 — repo created
+## Stack
+- FastAPI (Python), SQLite log, CORS, simple rate limit, optional Bearer auth
+- Static UI served at `/ui`
+- Render (free) deploy
+- Tests: pytest + GitHub Actions CI
+
+## Run locally
+```bash
+python3 -m venv .venv
+source .venv/bin/activate
+pip install -r app-api/requirements.txt
+export MOCK_MODE=1
+uvicorn app-api.main:app --host 0.0.0.0 --port 8000 --reload
+```
