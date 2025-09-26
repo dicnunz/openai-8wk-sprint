@@ -1,57 +1,82 @@
 from __future__ import annotations
 
-import datetime
+import contextlib
+import datetime as _dt
 import json
 import os
+import pathlib
 import sqlite3
-from pathlib import Path
-from typing import Any
+import typing as t
 
 from fastapi import FastAPI, HTTPException
-from fastapi.middleware.cors import CORSMiddleware
-from fastapi.staticfiles import StaticFiles
+from fastapi.responses import FileResponse
 from pydantic import BaseModel
+from openai import OpenAI
 
 app = FastAPI()
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"],
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
 
 MOCK = os.getenv("MOCK_MODE", "0") == "1"
-DB_PATH = os.getenv("DB_PATH", str((Path(__file__).parent / "data.db").resolve()))
+_DB_PATH = pathlib.Path(os.getenv("DB_PATH", "api-log.db")).resolve()
+
+client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
 
 
-def _db() -> sqlite3.Connection:
-    return sqlite3.connect(DB_PATH)
+def _timestamp() -> str:
+    """Return an ISO8601 timestamp ending with Z."""
+
+    return (
+        _dt.datetime.now(_dt.timezone.utc)
+        .replace(microsecond=0)
+        .isoformat()
+        .replace("+00:00", "Z")
+    )
 
 
 def _init_db() -> None:
-    with _db() as con:
+    """Initialise the sqlite database if required."""
+
+    _DB_PATH.parent.mkdir(parents=True, exist_ok=True)
+    with sqlite3.connect(_DB_PATH) as con:
         con.execute(
             """
             CREATE TABLE IF NOT EXISTS logs (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
+                ts TEXT NOT NULL,
                 mode TEXT NOT NULL,
                 input TEXT NOT NULL,
-                output TEXT NOT NULL,
-                ts TEXT NOT NULL
+                output TEXT NOT NULL
             )
             """
         )
 
 
-def _log(mode: str, input_text: str, output_obj: dict[str, Any]) -> None:
-    payload = json.dumps(output_obj)
-    timestamp = datetime.datetime.utcnow().isoformat() + "Z"
+@contextlib.contextmanager
+def _db() -> t.Iterator[sqlite3.Connection]:
+    """Context manager that yields a sqlite connection."""
+
+    con = sqlite3.connect(_DB_PATH)
+    con.row_factory = sqlite3.Row
+    try:
+        yield con
+        con.commit()
+    finally:
+        con.close()
+
+
+def _record_log(mode: str, inp: t.Mapping[str, t.Any], out: t.Mapping[str, t.Any]) -> None:
+    payload_in = json.dumps(inp, ensure_ascii=False)
+    payload_out = json.dumps(out, ensure_ascii=False)
     with _db() as con:
         con.execute(
-            "INSERT INTO logs(mode, input, output, ts) VALUES(?, ?, ?, ?)",
-            (mode, input_text, payload, timestamp),
+            "INSERT INTO logs (ts, mode, input, output) VALUES (?, ?, ?, ?)",
+            (_timestamp(), mode, payload_in, payload_out),
         )
+        con.commit()
+
+
+def _ensure_api_key() -> None:
+    if not client.api_key:
+        raise HTTPException(status_code=500, detail="Missing OPENAI_API_KEY")
 
 
 class GenIn(BaseModel):
@@ -62,169 +87,179 @@ class TextIn(BaseModel):
     text: str
 
 
-def _openai():
-    from openai import OpenAI
-
-    client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
-    if not client.api_key:
-        raise HTTPException(status_code=500, detail="Missing OPENAI_API_KEY")
-    return client
-
-
-@app.on_event("startup")
-def startup() -> None:
-    _init_db()
-
-
 @app.get("/health")
-def health():
+def health() -> dict[str, bool]:
     return {"ok": True}
 
 
+def _clean_text(value: str) -> str:
+    return value.strip()
+
+
+def _mock_generate(prompt: str) -> str:
+    return f"(mock) you said: {prompt}"
+
+
+def _mock_title(text: str) -> str:
+    cleaned = _clean_text(text)
+    if not cleaned:
+        return "Untitled"
+    words = cleaned.split()
+    title = " ".join(words[:12])
+    return title[:80]
+
+
+def _mock_summary(text: str) -> str:
+    cleaned = _clean_text(text)
+    if not cleaned:
+        return "No content."
+    if len(cleaned) <= 150:
+        return cleaned
+    clipped = cleaned[:150].rstrip()
+    return f"{clipped}..."
+
+
+def _mock_keywords(text: str) -> list[str]:
+    import re
+
+    words = re.findall(r"\b\w+\b", text.lower())
+    return sorted(set(words))
+
+
 @app.post("/generate")
-def generate(inp: GenIn):
+def generate(inp: GenIn) -> dict[str, str]:
     if MOCK:
-        result = {"text": f"(mock) you said: {inp.prompt}"}
-        _log("generate", inp.prompt, result)
-        return result
-    try:
-        client = _openai()
-        resp = client.chat.completions.create(
-            model="gpt-4o-mini",
-            messages=[{"role": "user", "content": inp.prompt}],
-            temperature=0.2,
-        )
-        result = {"text": resp.choices[0].message.content}
-        _log("generate", inp.prompt, result)
-        return result
-    except HTTPException:
-        raise
-    except Exception as exc:  # pragma: no cover - network failures
-        raise HTTPException(status_code=500, detail=str(exc))
+        payload = {"text": _mock_generate(inp.prompt)}
+    else:
+        _ensure_api_key()
+        try:
+            resp = client.chat.completions.create(
+                model="gpt-4o-mini",
+                messages=[{"role": "user", "content": inp.prompt}],
+                temperature=0.2,
+            )
+        except Exception as exc:  # pragma: no cover - defensive
+            raise HTTPException(status_code=500, detail=str(exc)) from exc
+        payload = {"text": resp.choices[0].message.content}
+
+    _record_log("generate", inp.model_dump(), payload)
+    return payload
 
 
 @app.post("/title")
-def title(inp: TextIn):
-    text = inp.text.strip()
+def title(inp: TextIn) -> dict[str, str]:
+    cleaned = _clean_text(inp.text)
     if MOCK:
-        result = {"text": text[:60] or "Untitled"}
-        _log("title", inp.text, result)
-        return result
-    try:
-        client = _openai()
-        resp = client.chat.completions.create(
-            model="gpt-4o-mini",
-            messages=[
-                {"role": "system", "content": "Return a short, punchy title under 60 chars."},
-                {"role": "user", "content": inp.text},
-            ],
-            temperature=0.1,
-        )
-        result = {"text": resp.choices[0].message.content.strip()[:60]}
-        _log("title", inp.text, result)
-        return result
-    except HTTPException:
-        raise
-    except Exception as exc:  # pragma: no cover - network failures
-        raise HTTPException(status_code=500, detail=str(exc))
+        result = _mock_title(inp.text)
+    else:
+        if not cleaned:
+            result = "Untitled"
+        else:
+            _ensure_api_key()
+            try:
+                resp = client.chat.completions.create(
+                    model="gpt-4o-mini",
+                    messages=[
+                        {"role": "system", "content": "Provide a concise title."},
+                        {"role": "user", "content": cleaned},
+                    ],
+                    temperature=0.1,
+                )
+            except Exception as exc:  # pragma: no cover - defensive
+                raise HTTPException(status_code=500, detail=str(exc)) from exc
+            result = resp.choices[0].message.content
+    if not cleaned:
+        result = "Untitled"
+    elif not result.strip():
+        result = "Untitled"
+    payload = {"text": result}
+    _record_log("title", inp.model_dump(), payload)
+    return payload
 
 
 @app.post("/summarize")
-def summarize(inp: TextIn):
-    text = inp.text.strip()
+def summarize(inp: TextIn) -> dict[str, str]:
+    cleaned = _clean_text(inp.text)
     if MOCK:
-        if not text:
-            result = {"text": "No content."}
-            _log("summarize", inp.text, result)
-            return result
-        snippet = text[:150]
-        if len(text) > 150:
-            snippet += "..."
-        result = {"text": snippet}
-        _log("summarize", inp.text, result)
-        return result
-    try:
-        client = _openai()
-        resp = client.chat.completions.create(
-            model="gpt-4o-mini",
-            messages=[
-                {"role": "system", "content": "Summarize in one clear sentence."},
-                {"role": "user", "content": inp.text},
-            ],
-            temperature=0.2,
-        )
-        result = {"text": resp.choices[0].message.content.strip()}
-        _log("summarize", inp.text, result)
-        return result
-    except HTTPException:
-        raise
-    except Exception as exc:  # pragma: no cover - network failures
-        raise HTTPException(status_code=500, detail=str(exc))
+        summary = _mock_summary(inp.text)
+    else:
+        if not cleaned:
+            summary = "No content."
+        else:
+            _ensure_api_key()
+            try:
+                resp = client.chat.completions.create(
+                    model="gpt-4o-mini",
+                    messages=[
+                        {"role": "system", "content": "Summarize the following text."},
+                        {"role": "user", "content": cleaned},
+                    ],
+                    temperature=0.3,
+                )
+            except Exception as exc:  # pragma: no cover - defensive
+                raise HTTPException(status_code=500, detail=str(exc)) from exc
+            summary = resp.choices[0].message.content
+
+    payload = {"text": summary if cleaned else "No content."}
+    _record_log("summarize", inp.model_dump(), payload)
+    return payload
 
 
 @app.post("/keywords")
-def keywords(inp: TextIn):
+def keywords(inp: TextIn) -> dict[str, list[str]]:
+    cleaned = _clean_text(inp.text)
     if MOCK:
-        words = [w.strip(".,!?;:").lower() for w in inp.text.split()]
-        uniq = sorted({w for w in words if len(w) > 3})[:8]
-        result = {"keywords": uniq}
-        _log("keywords", inp.text, result)
-        return result
-    try:
-        client = _openai()
-        resp = client.chat.completions.create(
-            model="gpt-4o-mini",
-            messages=[
-                {"role": "system", "content": "Extract 5–10 key terms as a JSON array of strings."},
-                {"role": "user", "content": inp.text},
-            ],
-            temperature=0.2,
-        )
-        content = resp.choices[0].message.content
-        try:
-            data = json.loads(content)
-            if not isinstance(data, list):
-                raise ValueError("Keywords must be a list")
-            keywords_list = [str(item) for item in data]
-        except (json.JSONDecodeError, ValueError):
-            keywords_list = [kw.strip() for kw in content.split(",") if kw.strip()]
-        result = {"keywords": keywords_list}
-        _log("keywords", inp.text, result)
-        return result
-    except HTTPException:
-        raise
-    except Exception as exc:  # pragma: no cover - network failures
-        raise HTTPException(status_code=500, detail=str(exc))
+        words = _mock_keywords(inp.text)
+    else:
+        if not cleaned:
+            words = []
+        else:
+            _ensure_api_key()
+            try:
+                resp = client.chat.completions.create(
+                    model="gpt-4o-mini",
+                    messages=[
+                        {
+                            "role": "system",
+                            "content": "Extract distinct keywords as a comma separated list.",
+                        },
+                        {"role": "user", "content": cleaned},
+                    ],
+                    temperature=0.0,
+                )
+            except Exception as exc:  # pragma: no cover - defensive
+                raise HTTPException(status_code=500, detail=str(exc)) from exc
+            words = [w.strip().lower() for w in resp.choices[0].message.content.split(",") if w.strip()]
+            words = sorted(dict.fromkeys(words))
 
-
-static_dir = Path(__file__).parent / "static"
-if static_dir.exists():
-    app.mount("/ui", StaticFiles(directory=static_dir, html=True), name="ui")
+    payload = {"keywords": words}
+    _record_log("keywords", inp.model_dump(), payload)
+    return payload
 
 
 @app.get("/history")
-def history(limit: int = 10):
-    limited = max(1, min(limit, 100))
+def history(limit: int = 10) -> list[dict[str, t.Any]]:
     with _db() as con:
-        rows = con.execute(
-            "SELECT id, mode, input, output, ts FROM logs ORDER BY id DESC LIMIT ?",
-            (limited,),
-        ).fetchall()
-
-    history_items = []
-    for row in rows:
-        output_raw = row[3]
-        try:
-            output_obj: Any = json.loads(output_raw)
-        except json.JSONDecodeError:
-            output_obj = output_raw
-        history_items.append(
-            {
-                "id": row[0],
-                "mode": row[1],
-                "input": row[2],
-                "output": output_obj,
-                "ts": row[4],
-            }
+        cur = con.execute(
+            "SELECT ts, mode, input, output FROM logs ORDER BY id DESC LIMIT ?",
+            (limit,),
         )
-    return history_items
+        rows = [
+            {
+                "ts": row["ts"],
+                "mode": row["mode"],
+                "input": json.loads(row["input"]),
+                "output": json.loads(row["output"]),
+            }
+            for row in cur.fetchall()
+        ]
+    return rows
+
+
+@app.get("/ui")
+def ui() -> FileResponse:
+    static_dir = pathlib.Path(__file__).parent / "static"
+    return FileResponse(static_dir / "index.html")
+
+
+_init_db()
