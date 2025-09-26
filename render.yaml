@@ -12,10 +12,13 @@ services:
 staticSites:
 - name: openai-8wk-sprint-web
 
+codex/add-render.yaml-for-web-frontend-5n91ux
+staticSites:
+- name: openai-8wk-sprint-web
 - type: static_site
   name: openai-8wk-sprint-web
   buildCommand: cd app-web && npm ci && npm run build
-  staticPublishPath: app-web/dist
+  publishPath: app-web/dist
   envVars:
   - key: VITE_API_BASE
     value: https://openai-8wk-sprint-api.onrender.com
