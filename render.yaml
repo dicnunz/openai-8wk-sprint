@@ -8,9 +8,15 @@ services:
   envVars:
   - key: MOCK_MODE
     value: "1"
-
+ codex/add-render.yaml-for-web-frontend-pmawb8
 staticSites:
 - name: openai-8wk-sprint-web
+
+codex/add-render.yaml-for-web-frontend-5n91ux
+staticSites:
+- name: openai-8wk-sprint-web
+- type: static_site
+  name: openai-8wk-sprint-web
   buildCommand: cd app-web && npm ci && npm run build
   publishPath: app-web/dist
   envVars:
